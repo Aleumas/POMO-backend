@@ -12,18 +12,37 @@ const io = new Server(httpServer, {
 });
 
 const timerManager = new TimerManager();
+const participants = {};
 
 io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     // Clean up timer when participant disconnects
-    timerManager.deleteTimer(socket.id);
+    if (participants[socket.id]) {
+      timerManager.deleteTimer(participants[socket.id].uid);
+    }
+  });
+
+  socket.on("disconnecting", () => {
+    var rooms = socket.rooms;
+    rooms.forEach((room) => {
+      if (participants[socket.id]) {
+        socket.in(room).emit("removeParticipant", participants[socket.id].uid);
+        socket
+          .in(room)
+          .emit(
+            "showToast",
+            `${participants[socket.id].displayName} left room`,
+          );
+      }
+    });
   });
 
   socket.on("startTimer", (participantId, preset) => {
-    console.log("start event recieved");
     const timer = timerManager.getTimer(participantId);
+    console.log(timer);
+    console.log(participantId);
     if (timer) {
-      timer.start(socket, preset);
+      timer.start(io, preset);
     }
   });
 
@@ -34,9 +53,72 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("joinRoom", (roomCode, participantId) => {
-    socket.join(roomCode);
-    timerManager.createTimer(participantId);
+  socket.on(
+    "syncRequest",
+    (targetSocketId, participantId, participantDisplayName) => {
+      if (io.sockets.sockets.has(targetSocketId)) {
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+        targetSocket.emit(
+          "syncRequest",
+          socket.id,
+          participantId,
+          participantDisplayName,
+        );
+      }
+    },
+  );
+
+  socket.on(
+    "syncAcceptance",
+    (room, targetParticipantId, targetSocketId, participantId) => {
+      timerManager.syncTimers(room, targetParticipantId, participantId);
+      socket.emit("syncStatusUpdate", true);
+
+      if (io.sockets.sockets.has(targetSocketId)) {
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+        targetSocket.emit("syncStatusUpdate", true);
+      }
+    },
+  );
+
+  socket.on("unsync", (room, targetParticipantId, targetSocketId) => {
+    timerManager.unsyncTimers(room, targetParticipantId);
+    socket.emit("showToast", "unsync was successful");
+    socket.emit("syncStatusUpdate", false);
+
+    if (io.sockets.sockets.has(targetSocketId)) {
+      const targetSocket = io.sockets.sockets.get(targetSocketId);
+      targetSocket.emit("syncStatusUpdate", false);
+    }
+  });
+
+  socket.on("joinRoom", async (room, displayName, id) => {
+    const existingParticipants = (await io.in(room).fetchSockets())
+      .map((socket) => {
+        if (!participants[socket.id].uid) {
+          return;
+        }
+        return {
+          participant: participants[socket.id].uid,
+          socketId: participants[socket.id].socketId,
+        };
+      })
+      .filter((participant) => participant !== null);
+    socket.join(room);
+
+    socket.emit("addExistingParticipants", existingParticipants);
+
+    timerManager.createTimer(room, id);
+    if (!participants[socket.id]) {
+      socket.in(room).emit("showToast", `${displayName} joined room`);
+      socket.in(room).emit("addParticipant", id, socket.id);
+    }
+
+    participants[socket.id] = {
+      uid: id,
+      displayName: displayName,
+      socketId: socket.id,
+    };
   });
 });
 
