@@ -39,10 +39,22 @@ io.on("connection", (socket) => {
 
   socket.on("startTimer", (participantId, preset) => {
     const timer = timerManager.getTimer(participantId);
-    console.log(timer);
-    console.log(participantId);
     if (timer) {
       timer.start(io, preset);
+    }
+  });
+
+  socket.on("pauseTimer", (participantId) => {
+    const timer = timerManager.getTimer(participantId);
+    if (timer) {
+      timer.stop();
+    }
+  });
+
+  socket.on("resumeTimer", (participantId) => {
+    const timer = timerManager.getTimer(participantId);
+    if (timer) {
+      timer.start(io, timer.time);
     }
   });
 
@@ -50,6 +62,7 @@ io.on("connection", (socket) => {
     const timer = timerManager.getTimer(participantId);
     if (timer) {
       timer.stop();
+      socket.emit(`reset:${participantId}`);
     }
   });
 

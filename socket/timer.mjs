@@ -6,21 +6,30 @@ class Timer extends EventEmitter {
     this.owners = owners;
     this.room = room;
     this.timerId = null;
+    this.time = 0;
   }
 
   start(io, time) {
+    this.time = time;
     if (!this.timerId) {
       this.timerId = setInterval(() => {
         this.owners.forEach((owner) => {
           io.to(this.room).emit(`modeUpdate:${owner}`, "work");
-          io.to(this.room).emit(`timeUpdate:${owner}`, time);
-          if (time === 0) {
+          io.to(this.room).emit(`timeUpdate:${owner}`, this.time);
+          if (this.time === 0) {
             this.stop();
             io.to(this.room).emit(`modeUpdate:${owner}`, "idle");
           }
         });
-        time -= 1;
+        this.time -= 1;
       }, 1000);
+    }
+  }
+
+  pause() {
+    if (this.timerId) {
+      clearInterval(this.timerId);
+      this.timerId = null;
     }
   }
 
