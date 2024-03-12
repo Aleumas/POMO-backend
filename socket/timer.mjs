@@ -9,35 +9,47 @@ class Timer extends EventEmitter {
     this.time = 0;
   }
 
-  start(io, time) {
+  start(io, time, nextMode) {
     this.time = time;
     if (!this.timerId) {
       this.timerId = setInterval(() => {
+        this.time -= 1;
         this.owners.forEach((owner) => {
-          io.to(this.room).emit(`modeUpdate:${owner}`, "work");
+          io.to(this.room).emit(`timerModeUpdate:${owner}`, "running");
           io.to(this.room).emit(`timeUpdate:${owner}`, this.time);
           if (this.time === 0) {
-            this.stop();
-            io.to(this.room).emit(`modeUpdate:${owner}`, "idle");
+            this.stop(io, nextMode);
           }
         });
-        this.time -= 1;
       }, 1000);
     }
   }
 
-  pause() {
+  pause(io) {
     if (this.timerId) {
       clearInterval(this.timerId);
       this.timerId = null;
+      this.owners.forEach((owner) => {
+        io.to(this.room).emit(`timerModeUpdate:${owner}`, "paused");
+      });
     }
   }
 
-  stop() {
+  stop(io, nextMode) {
     if (this.timerId) {
       clearInterval(this.timerId);
       this.timerId = null;
+      this.owners.forEach((owner) => {
+        io.to(this.room).emit(`timerModeUpdate:${owner}`, "idle");
+        io.to(this.room).emit(`sessionModeUpdate:${owner}`, nextMode);
+      });
     }
+  }
+
+  update(io, time) {
+    this.owners.forEach((owner) => {
+      io.to(this.room).emit(`timeUpdate:${owner}`, time);
+    });
   }
 
   addOwner(owner) {

@@ -13,6 +13,9 @@ const io = new Server(httpServer, {
 
 const timerManager = new TimerManager();
 const participants = {};
+const nextMode = (mode) => {
+  return mode == "work" ? "break" : "work";
+};
 
 io.on("connection", (socket) => {
   socket.on("disconnect", () => {
@@ -37,17 +40,17 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("startTimer", (participantId, preset) => {
+  socket.on("startTimer", (participantId, preset, currentSessionMode) => {
     const timer = timerManager.getTimer(participantId);
     if (timer) {
-      timer.start(io, preset);
+      timer.start(io, preset, nextMode(currentSessionMode));
     }
   });
 
-  socket.on("pauseTimer", (participantId) => {
+  socket.on("pauseTimer", (currentSessionMode, participantId) => {
     const timer = timerManager.getTimer(participantId);
     if (timer) {
-      timer.stop();
+      timer.stop(io, currentSessionMode);
     }
   });
 
@@ -58,11 +61,18 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("stopTimer", (participantId) => {
+  socket.on("stopTimer", (currentSessionMode, participantId) => {
     const timer = timerManager.getTimer(participantId);
     if (timer) {
-      timer.stop();
-      socket.emit(`reset:${participantId}`);
+      timer.stop(io, nextMode(currentSessionMode));
+    }
+  });
+
+  socket.on("updateTimer", (time, participantId) => {
+    const timer = timerManager.getTimer(participantId);
+    if (timer) {
+      console.log("time: ", time);
+      timer.update(io, time);
     }
   });
 
@@ -125,13 +135,13 @@ io.on("connection", (socket) => {
     if (!participants[socket.id]) {
       socket.in(room).emit("showToast", `${displayName} joined room`);
       socket.in(room).emit("addParticipant", id, socket.id);
-    }
 
-    participants[socket.id] = {
-      uid: id,
-      displayName: displayName,
-      socketId: socket.id,
-    };
+      participants[socket.id] = {
+        uid: id,
+        displayName: displayName,
+        socketId: socket.id,
+      };
+    }
   });
 });
 
