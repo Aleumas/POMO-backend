@@ -9,16 +9,23 @@ class Timer extends EventEmitter {
     this.time = 0;
   }
 
-  start(io, time, nextMode) {
+  start(io, time, transition, nextTransitions) {
     this.time = time;
     if (!this.timerId) {
+      this.owners.forEach((owner) =>
+        io.to(this.room).emit(`machineTransition:${owner}`, transition),
+      );
+
       this.timerId = setInterval(() => {
         this.time -= 1;
+
         this.owners.forEach((owner) => {
           io.to(this.room).emit(`timerModeUpdate:${owner}`, "running");
           io.to(this.room).emit(`timeUpdate:${owner}`, this.time);
+
           if (this.time === 0) {
-            this.stop(io, nextMode);
+            this.stop(io, nextTransitions);
+            io.to(this.room).emit(`sessionCompletion:${owner}`);
           }
         });
       }, 1000);
@@ -28,20 +35,20 @@ class Timer extends EventEmitter {
   pause(io) {
     if (this.timerId) {
       clearInterval(this.timerId);
-      this.timerId = null;
       this.owners.forEach((owner) => {
-        io.to(this.room).emit(`timerModeUpdate:${owner}`, "paused");
+        io.to(this.room).emit(`machineTransition:${owner}`, "PAUSE");
       });
     }
   }
 
-  stop(io, nextMode) {
+  stop(io, transitions) {
     if (this.timerId) {
       clearInterval(this.timerId);
       this.timerId = null;
       this.owners.forEach((owner) => {
-        io.to(this.room).emit(`timerModeUpdate:${owner}`, "idle");
-        io.to(this.room).emit(`sessionModeUpdate:${owner}`, nextMode);
+        transitions.forEach((transition) => {
+          io.to(this.room).emit(`machineTransition:${owner}`, transition);
+        });
       });
     }
   }

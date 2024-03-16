@@ -13,9 +13,6 @@ const io = new Server(httpServer, {
 
 const timerManager = new TimerManager();
 const participants = {};
-const nextMode = (mode) => {
-  return mode == "work" ? "break" : "work";
-};
 
 io.on("connection", (socket) => {
   socket.on("disconnect", () => {
@@ -40,78 +37,41 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("startTimer", (participantId, preset, currentSessionMode) => {
+  socket.on(
+    "startTimer",
+    (participantId, preset, transition, nextTransition) => {
+      const timer = timerManager.getTimer(participantId);
+      if (timer) {
+        timer.start(io, preset, transition, nextTransition);
+      }
+    },
+  );
+
+  socket.on("pauseTimer", (participantId) => {
     const timer = timerManager.getTimer(participantId);
     if (timer) {
-      timer.start(io, preset, nextMode(currentSessionMode));
+      timer.pause(io);
     }
   });
 
-  socket.on("pauseTimer", (currentSessionMode, participantId) => {
+  socket.on("resumeTimer", (participantId, transition, nextTransitions) => {
     const timer = timerManager.getTimer(participantId);
     if (timer) {
-      timer.stop(io, currentSessionMode);
+      timer.start(io, timer.time, transition, nextTransitions);
     }
   });
 
-  socket.on("resumeTimer", (participantId) => {
+  socket.on("stopTimer", (participantId, transitions) => {
     const timer = timerManager.getTimer(participantId);
     if (timer) {
-      timer.start(io, timer.time);
-    }
-  });
-
-  socket.on("stopTimer", (currentSessionMode, participantId) => {
-    const timer = timerManager.getTimer(participantId);
-    if (timer) {
-      timer.stop(io, nextMode(currentSessionMode));
+      timer.stop(io, transitions);
     }
   });
 
   socket.on("updateTimer", (time, participantId) => {
     const timer = timerManager.getTimer(participantId);
     if (timer) {
-      console.log("time: ", time);
       timer.update(io, time);
-    }
-  });
-
-  socket.on(
-    "syncRequest",
-    (targetSocketId, participantId, participantDisplayName) => {
-      if (io.sockets.sockets.has(targetSocketId)) {
-        const targetSocket = io.sockets.sockets.get(targetSocketId);
-        targetSocket.emit(
-          "syncRequest",
-          socket.id,
-          participantId,
-          participantDisplayName,
-        );
-      }
-    },
-  );
-
-  socket.on(
-    "syncAcceptance",
-    (room, targetParticipantId, targetSocketId, participantId) => {
-      timerManager.syncTimers(room, targetParticipantId, participantId);
-      socket.emit("syncStatusUpdate", true);
-
-      if (io.sockets.sockets.has(targetSocketId)) {
-        const targetSocket = io.sockets.sockets.get(targetSocketId);
-        targetSocket.emit("syncStatusUpdate", true);
-      }
-    },
-  );
-
-  socket.on("unsync", (room, targetParticipantId, targetSocketId) => {
-    timerManager.unsyncTimers(room, targetParticipantId);
-    socket.emit("showToast", "unsync was successful");
-    socket.emit("syncStatusUpdate", false);
-
-    if (io.sockets.sockets.has(targetSocketId)) {
-      const targetSocket = io.sockets.sockets.get(targetSocketId);
-      targetSocket.emit("syncStatusUpdate", false);
     }
   });
 
