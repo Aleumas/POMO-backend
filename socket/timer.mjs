@@ -20,7 +20,6 @@ class Timer extends EventEmitter {
         this.time -= 1;
 
         this.owners.forEach((owner) => {
-          io.to(this.room).emit(`timerModeUpdate:${owner}`, "running");
           io.to(this.room).emit(`timeUpdate:${owner}`, this.time);
 
           if (this.time === 0) {
@@ -35,6 +34,7 @@ class Timer extends EventEmitter {
   pause(io) {
     if (this.timerId) {
       clearInterval(this.timerId);
+      this.timerId = null;
       this.owners.forEach((owner) => {
         io.to(this.room).emit(`machineTransition:${owner}`, "PAUSE");
       });
@@ -42,15 +42,13 @@ class Timer extends EventEmitter {
   }
 
   stop(io, transitions) {
-    if (this.timerId) {
-      clearInterval(this.timerId);
-      this.timerId = null;
-      this.owners.forEach((owner) => {
-        transitions.forEach((transition) => {
-          io.to(this.room).emit(`machineTransition:${owner}`, transition);
-        });
+    clearInterval(this.timerId);
+    this.timerId = null;
+    this.owners.forEach((owner) => {
+      transitions.forEach((transition) => {
+        io.to(this.room).emit(`machineTransition:${owner}`, transition);
       });
-    }
+    });
   }
 
   update(io, time) {

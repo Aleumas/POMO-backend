@@ -69,6 +69,10 @@ io.on("connection", (socket) => {
   });
 
   socket.on("updateTimer", (time, participantId) => {
+    if (time === 0) {
+      return;
+    }
+
     const timer = timerManager.getTimer(participantId);
     if (timer) {
       timer.update(io, time);
