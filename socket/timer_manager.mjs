@@ -15,6 +15,10 @@ class TimerManager {
     return this.timers[participantId];
   }
 
+  hasTimer(participantId) {
+    return this.timers[participantId] != undefined;
+  }
+
   deleteTimer(participantId) {
     delete this.timers[participantId];
   }
