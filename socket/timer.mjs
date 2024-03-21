@@ -1,4 +1,5 @@
 import EventEmitter from "events";
+import { supabase } from "../supabase/supabase.mjs";
 
 class Timer extends EventEmitter {
   constructor(room, owners) {
@@ -9,22 +10,45 @@ class Timer extends EventEmitter {
     this.time = 0;
   }
 
-  start(io, time, transition, nextTransitions) {
+  async start(io, time, transition, nextTransitions) {
     this.time = time;
     if (!this.timerId) {
-      this.owners.forEach((owner) =>
-        io.to(this.room).emit(`machineTransition:${owner}`, transition),
-      );
+      this.owners.forEach(async (owner) => {
+        io.to(this.room).emit(`machineTransition:${owner}`, transition);
+      });
 
       this.timerId = setInterval(() => {
         this.time -= 1;
 
-        this.owners.forEach((owner) => {
+        this.owners.forEach(async (owner) => {
           io.to(this.room).emit(`timeUpdate:${owner}`, this.time);
 
           if (this.time === 0) {
             this.stop(io, nextTransitions);
             io.to(this.room).emit(`sessionCompletion:${owner}`);
+            if (nextTransitions.length > 0) {
+              if (nextTransitions[0] === "BREAK") {
+                await supabase.rpc("increment_total_work_sessions", {
+                  uid: this.room,
+                  user_sub: owner,
+                });
+                await supabase.rpc("increment_total_work_minutes", {
+                  uid: this.room,
+                  user_sub: owner,
+                  amount: time / 60,
+                });
+              } else {
+                await supabase.rpc("increment_total_break_sessions", {
+                  uid: this.room,
+                  user_sub: owner,
+                });
+                await supabase.rpc("increment_total_break_minutes", {
+                  uid: this.room,
+                  user_sub: owner,
+                  amount: time / 60,
+                });
+              }
+            }
           }
         });
       }, 1000);

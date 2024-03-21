@@ -4,6 +4,7 @@ import { Server } from "socket.io";
 import TimerManager from "./socket/timer_manager.mjs";
 import { v4 as uuidv4 } from "uuid";
 import cors from "cors";
+import { supabase } from "./supabase/supabase.mjs";
 
 const app = express();
 const httpServer = createServer(app);
@@ -51,7 +52,7 @@ io.on("connection", (socket) => {
 
   socket.on("disconnecting", () => {
     var socketRooms = socket.rooms;
-    socketRooms.forEach((room) => {
+    socketRooms.forEach(async (room) => {
       if (rooms.has(room) && rooms.get(room).has(socket.id)) {
         socket
           .in(room)
@@ -207,6 +208,12 @@ io.on("connection", (socket) => {
       io.to(room).emit("addExistingParticipants", existingParticipants);
 
       socket.in(room).emit("showToast", `${displayName} joined room`);
+
+      const { error } = await supabase.from("session").insert({
+        id: room,
+        user_id: id,
+      });
+      console.log("error: ", error);
     }
   });
 });
