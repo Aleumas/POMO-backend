@@ -209,13 +209,25 @@ io.on("connection", (socket) => {
 
       socket.in(room).emit("showToast", `${displayName} joined room`);
 
-      const { error } = await supabase.from("session").insert({
+      await supabase.from("session").insert({
         id: room,
         user_id: id,
       });
-      console.log("error: ", error);
     }
   });
+});
+
+app.get("/:user_sub/total_sessions", async (req, res) => {
+  const { user_sub } = req.params;
+  const { data, error } = await supabase.rpc("get_total_sessions", {
+    user_sub: user_sub,
+  });
+
+  if (!error) {
+    res.status(200).send(data);
+  } else {
+    res.status(422).send({});
+  }
 });
 
 app.post("/room", (req, res) => {
