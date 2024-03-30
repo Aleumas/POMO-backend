@@ -6,9 +6,20 @@ import { v4 as uuidv4 } from "uuid";
 import cors from "cors";
 import { supabase } from "./supabase/supabase.mjs";
 
+import { createClient } from "redis";
+
 const app = express();
+const client = createClient({
+  password: process.env.REDIS_PASSWORD,
+  socket: {
+    host: "redis-15738.c325.us-east-1-4.ec2.cloud.redislabs.com",
+    port: 15738,
+  },
+});
 const httpServer = createServer(app);
 const allowedOrigins = ["http://localhost:3001"];
+
+await client.connect();
 app.use(
   cors({
     origin: function (origin, callback) {
