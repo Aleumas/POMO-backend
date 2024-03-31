@@ -13,15 +13,12 @@ class Timer extends EventEmitter {
   async start(io, time, transition, nextTransitions) {
     this.time = time;
     if (!this.timerId) {
-      this.owners.forEach(async (owner) => {
-        io.to(this.room).emit(`machineTransition:${owner}`, transition);
-      });
-
       this.timerId = setInterval(() => {
         this.time -= 1;
 
         this.owners.forEach(async (owner) => {
           io.to(this.room).emit(`timeUpdate:${owner}`, this.time);
+          io.to(this.room).emit(`machineTransition:${owner}`, transition);
 
           if (this.time === 0) {
             this.stop(io, nextTransitions);
