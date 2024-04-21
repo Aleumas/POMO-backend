@@ -2,7 +2,6 @@ import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import TimerManager from "./socket/timer_manager.mjs";
-import { v4 as uuidv4 } from "uuid";
 import cors from "cors";
 import { supabase } from "./supabase/supabase.mjs";
 
@@ -12,14 +11,16 @@ const app = express();
 const client = createClient({
   password: process.env.REDIS_PASSWORD,
   socket: {
-    host: "redis-15738.c325.us-east-1-4.ec2.cloud.redislabs.com",
+    host: "redis-18353.c276.us-east-1-2.ec2.redns.redis-cloud.com:18353",
     port: 15738,
   },
 });
 const httpServer = createServer(app);
 const allowedOrigins = ["http://localhost:3001"];
+const roomTTL = 60 * 60 * 12; // half a one day
 
 await client.connect();
+
 app.use(
   cors({
     origin: function (origin, callback) {
@@ -44,120 +45,117 @@ const io = new Server(httpServer, {
 });
 
 const timerManager = new TimerManager();
-const rooms = new Map();
 
 io.on("connection", (socket) => {
-  socket.on("disconnect", () => {
-    rooms.forEach((room) => {
-      if (
-        room.has(socket.id) &&
-        timerManager.hasTimer(room.get(socket.id).uid)
-      ) {
-        const timer = timerManager.getTimer(room.get(socket.id).uid);
-        timer.stop(io, ["STOP"]);
-        timerManager.deleteTimer(room.get(socket.id).uid);
-      }
-      room.delete(socket.id);
-    });
-  });
-
   socket.on("disconnecting", () => {
     var socketRooms = socket.rooms;
     socketRooms.forEach(async (room) => {
-      if (rooms.has(room) && rooms.get(room).has(socket.id)) {
-        socket
-          .in(room)
-          .emit("removeParticipant", rooms.get(room).get(socket.id).uid);
+      const participantDetails = JSON.parse(await client.hGet(room, socket.id));
+
+      if (participantDetails) {
+        socket.in(room).emit("removeParticipant", participantDetails.uid);
         socket
           .in(room)
           .emit(
             "showToast",
-            `${rooms.get(room).get(socket.id).displayName ?? "user"} left room`,
+            `${participantDetails.displayName ?? "user"} left room`,
           );
+
+        if (timerManager.hasTimer(participantDetails.uid)) {
+          const timer = timerManager.getTimer(participantDetails.uid);
+          timer.stop(io, ["STOP"]);
+          timerManager.deleteTimer(participantDetails.uid);
+        }
       }
+
+      await client.hDel(room, socket.id);
     });
   });
 
-  socket.on("syncRequest", (room, targetSocketId) => {
+  socket.on("syncRequest", async (room, targetSocketId) => {
     const targetSocket = io.sockets.sockets.get(targetSocketId);
+    const sourceParticipantDetails = JSON.parse(
+      await client.hGet(room, socket.id),
+    );
 
-    if (!rooms.has(room)) {
-      return;
-    }
-
-    if (targetSocket) {
-      targetSocket.emit("showSyncRequest", rooms.get(room).get(socket.id));
+    if (sourceParticipantDetails && targetSocket) {
+      targetSocket.emit("showSyncRequest", sourceParticipantDetails);
     }
   });
 
-  socket.on("acceptSyncRequest", (room, sourceSocketId) => {
+  socket.on("acceptSyncRequest", async (room, sourceSocketId) => {
     const sourceSocket = io.sockets.sockets.get(sourceSocketId);
+
+    const targetParticipantDetails = await client.hGet(room, socket.id);
+    const sourceParticipantDetails = await client.hGet(room, sourceSocketId);
+
     if (
-      !rooms.has(room) ||
-      !rooms.get(room).has(socket.id) ||
-      !rooms.get(room).has(sourceSocketId) ||
+      sourceParticipantDetails == null ||
+      targetParticipantDetails == null ||
       !sourceSocket
     ) {
       return;
     }
 
-    const targetId = rooms.get(room).get(socket.id).uid;
-    const sourceId = rooms.get(room).get(sourceSocketId).uid;
+    const targetParticipantId = JSON.parse(targetParticipantDetails).uid;
+    const sourceParticipantId = JSON.parse(sourceParticipantDetails).uid;
 
     socket.emit("syncMachines");
     socket.on("syncMachines", (snapshot) => {
-      const syncedParticipants = timerManager.getTimer(sourceId)?.owners;
+      const syncedParticipants =
+        timerManager.getTimer(sourceParticipantId)?.owners;
       if (syncedParticipants) {
         syncedParticipants.forEach((participant) => {
           io.to(room).emit(`syncStatusUpdate:${participant}`, false);
         });
       }
 
-      io.to(room).emit(`setMachineSnapshot:${sourceId}`, snapshot);
-      io.to(room).emit(`setMachineSnapshot:${targetId}`, snapshot);
-      sourceSocket.emit(`syncStatusUpdate:${targetId}`, true);
-      socket.emit(`syncStatusUpdate:${sourceId}`, true);
+      io.to(room).emit(`setMachineSnapshot:${targetParticipantId}`, snapshot);
+      io.to(room).emit(`setMachineSnapshot:${sourceParticipantId}`, snapshot);
+      sourceSocket.emit(`syncStatusUpdate:${targetParticipantId}`, true);
+      socket.emit(`syncStatusUpdate:${sourceParticipantId}`, true);
 
-      timerManager.syncTimers(room, targetId, sourceId);
+      timerManager.syncTimers(room, targetParticipantId, sourceParticipantId);
 
       sourceSocket.emit(
         "showToast",
-        `${rooms.get(room)?.get(socket.id).displayName ?? "user"} accepted request to sync.`,
+        `${targetParticipantDetails.displayName ?? "user"} accepted request to sync.`,
         "success",
       );
     });
   });
 
-  socket.on("declineSyncRequest", (room, sourceSocketId) => {
+  socket.on("declineSyncRequest", async (room, sourceSocketId) => {
     const sourceSocket = io.sockets.sockets.get(sourceSocketId);
-    if (sourceSocket) {
+    const sourceParticipantDetails = JSON.parse(
+      await client.hGet(room, sourceSocketId),
+    );
+
+    if (sourceSocket && sourceParticipantDetails != null) {
       sourceSocket.emit(
         "showToast",
-        `${rooms.get(room)?.get(socket.id).displayName ?? "user"} declined request to sync.`,
+        `${sourceParticipantDetails.displayName ?? "user"} declined request to sync.`,
         "error",
       );
     }
   });
 
-  socket.on("unsync", (room, otherSocketId) => {
-    const otherSocket = io.sockets.sockets.get(otherSocketId);
-    if (
-      !rooms.has(room) ||
-      !rooms.get(room).has(socket.id) ||
-      !rooms.get(room).has(otherSocketId) ||
-      !otherSocket
-    ) {
+  socket.on("unsync", async (room, otherSocketId) => {
+    const sourceParticipantDetails = await client.hGet(room, socket.id);
+    const otherParticipantDetails = await client.hGet(room, otherSocketId);
+
+    if (sourceParticipantDetails == null || otherParticipantDetails == null) {
       return;
     }
 
-    const sourceId = rooms.get(room).get(socket.id).uid;
-    const otherId = rooms.get(room).get(otherSocketId).uid;
+    const sourceParticipantId = JSON.parse(sourceParticipantDetails).uid;
+    const otherParticipantId = JSON.parse(otherParticipantDetails).uid;
 
-    timerManager.unsyncTimers(room, sourceId);
+    timerManager.unsyncTimers(room, sourceParticipantId);
 
-    io.to(room).emit(`syncStatusUpdate:${otherId}`, false);
-    io.to(room).emit(`syncStatusUpdate:${sourceId}`, false);
-    io.to(room).emit(`machineTransition:${sourceId}`, "STOP");
+    io.to(room).emit(`syncStatusUpdate:${otherParticipantId}`, false);
+    io.to(room).emit(`syncStatusUpdate:${sourceParticipantId}`, false);
+    io.to(room).emit(`machineTransition:${sourceParticipantId}`, "STOP");
   });
 
   socket.on(
@@ -205,26 +203,28 @@ io.on("connection", (socket) => {
   socket.on("joinRoom", async (room, displayName, avatar, id) => {
     socket.join(room);
 
+    const participantDetails = JSON.stringify({
+      uid: id,
+      displayName: displayName ?? "user",
+      socketId: socket.id,
+      avatar: avatar,
+    });
+
+    await client.hSet(room, socket.id, participantDetails);
+    await client.expire(room, roomTTL);
+
     timerManager.createTimer(room, id);
-    if (rooms.has(room) && !rooms.get(room)?.get(socket.id)) {
-      rooms.get(room)?.set(socket.id, {
-        uid: id,
-        displayName: displayName ?? "user",
-        socketId: socket.id,
-        avatar: avatar,
-      });
 
-      const existingParticipants = [...rooms.get(room).values()];
+    const existingParticipants = await client.hVals(room);
 
-      io.to(room).emit("addExistingParticipants", existingParticipants);
+    io.to(room).emit("addExistingParticipants", existingParticipants);
 
-      socket.in(room).emit("showToast", `${displayName} joined room`);
+    socket.in(room).emit("showToast", `${displayName} joined room`);
 
-      await supabase.from("session").insert({
-        id: room,
-        user_id: id,
-      });
-    }
+    await supabase.from("session").insert({
+      id: room,
+      user_id: id,
+    });
   });
 });
 
@@ -238,21 +238,6 @@ app.get("/:user_sub/total_sessions", async (req, res) => {
     res.status(200).send(data);
   } else {
     res.status(422).send({});
-  }
-});
-
-app.post("/room", (req, res) => {
-  const roomId = uuidv4();
-  rooms.set(roomId, new Map());
-  res.status(201).json(roomId);
-});
-
-app.get("/rooms/:id", (req, res) => {
-  const { id } = req.params;
-  if (rooms.has(id)) {
-    res.status(200).send("Room exists");
-  } else {
-    res.status(404).send("Room not found");
   }
 });
 
