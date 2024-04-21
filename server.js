@@ -4,6 +4,7 @@ import { Server } from "socket.io";
 import TimerManager from "./socket/timer_manager.mjs";
 import cors from "cors";
 import { supabase } from "./supabase/supabase.mjs";
+import serverless from "serverless-http";
 
 import { createClient } from "redis";
 
@@ -241,4 +242,5 @@ app.get("/:user_sub/total_sessions", async (req, res) => {
   }
 });
 
-httpServer.listen(3000);
+app.use("/.netlify/functions/app", router);
+module.exports.handler = serverless(app);
