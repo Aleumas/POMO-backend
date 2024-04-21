@@ -4,7 +4,6 @@ import { Server } from "socket.io";
 import TimerManager from "./socket/timer_manager.mjs";
 import cors from "cors";
 import { supabase } from "./supabase/supabase.mjs";
-import serverless from "serverless-http";
 
 import { createClient } from "redis";
 
@@ -101,6 +100,8 @@ io.on("connection", (socket) => {
     const targetParticipantId = JSON.parse(targetParticipantDetails).uid;
     const sourceParticipantId = JSON.parse(sourceParticipantDetails).uid;
 
+    console.log(socket.id);
+    console.log(sourceSocketId);
     socket.emit("syncMachines");
     socket.on("syncMachines", (snapshot) => {
       const syncedParticipants =
@@ -133,6 +134,7 @@ io.on("connection", (socket) => {
     );
 
     if (sourceSocket && sourceParticipantDetails != null) {
+      console.log("displayName: ", sourceParticipantDetails.displayName);
       sourceSocket.emit(
         "showToast",
         `${sourceParticipantDetails.displayName ?? "user"} declined request to sync.`,
@@ -242,5 +244,4 @@ app.get("/:user_sub/total_sessions", async (req, res) => {
   }
 });
 
-app.use("/.netlify/functions/app", router);
-module.exports.handler = serverless(app);
+httpServer.listen(3000);
