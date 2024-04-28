@@ -100,8 +100,6 @@ io.on("connection", (socket) => {
     const targetParticipantId = JSON.parse(targetParticipantDetails).uid;
     const sourceParticipantId = JSON.parse(sourceParticipantDetails).uid;
 
-    console.log(socket.id);
-    console.log(sourceSocketId);
     socket.emit("syncMachines");
     socket.on("syncMachines", (snapshot) => {
       const syncedParticipants =
@@ -134,7 +132,6 @@ io.on("connection", (socket) => {
     );
 
     if (sourceSocket && sourceParticipantDetails != null) {
-      console.log("displayName: ", sourceParticipantDetails.displayName);
       sourceSocket.emit(
         "showToast",
         `${sourceParticipantDetails.displayName ?? "user"} declined request to sync.`,
