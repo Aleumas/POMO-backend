@@ -16,7 +16,7 @@ const client = createClient({
   },
 });
 const httpServer = createServer(app);
-const allowedOrigins = ["http://localhost:3001"];
+const allowedOrigins = ["https://tomatera.netlify.app"];
 const roomTTL = 60 * 60 * 12; // half a one day
 
 await client.connect();
@@ -241,4 +241,4 @@ app.get("/:user_sub/total_sessions", async (req, res) => {
   }
 });
 
-httpServer.listen(3000);
+httpServer.listen(process.env.PORT || 3000);
