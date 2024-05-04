@@ -8,7 +8,7 @@ import { supabase } from "./supabase/supabase.mjs";
 import { createClient } from "redis";
 
 const app = express();
-const client = createClient({
+const redis = createClient({
   password: process.env.REDIS_PASSWORD,
   socket: {
     host: "redis-18353.c276.us-east-1-2.ec2.redns.redis-cloud.com",
@@ -19,7 +19,7 @@ const httpServer = createServer(app);
 const allowedOrigins = ["https://tomatera.netlify.app"];
 const roomTTL = 60 * 60 * 12; // half a one day
 
-await client.connect();
+await redis.connect();
 
 app.use(
   cors({
@@ -50,7 +50,7 @@ io.on("connection", (socket) => {
   socket.on("disconnecting", () => {
     var socketRooms = socket.rooms;
     socketRooms.forEach(async (room) => {
-      const participantDetails = JSON.parse(await client.hGet(room, socket.id));
+      const participantDetails = JSON.parse(await redis.hGet(room, socket.id));
 
       if (participantDetails) {
         socket.in(room).emit("removeParticipant", participantDetails.uid);
@@ -68,14 +68,14 @@ io.on("connection", (socket) => {
         }
       }
 
-      await client.hDel(room, socket.id);
+      await redis.hDel(room, socket.id);
     });
   });
 
   socket.on("syncRequest", async (room, targetSocketId) => {
     const targetSocket = io.sockets.sockets.get(targetSocketId);
     const sourceParticipantDetails = JSON.parse(
-      await client.hGet(room, socket.id),
+      await redis.hGet(room, socket.id),
     );
 
     if (sourceParticipantDetails && targetSocket) {
@@ -86,8 +86,8 @@ io.on("connection", (socket) => {
   socket.on("acceptSyncRequest", async (room, sourceSocketId) => {
     const sourceSocket = io.sockets.sockets.get(sourceSocketId);
 
-    const targetParticipantDetails = await client.hGet(room, socket.id);
-    const sourceParticipantDetails = await client.hGet(room, sourceSocketId);
+    const targetParticipantDetails = await redis.hGet(room, socket.id);
+    const sourceParticipantDetails = await redis.hGet(room, sourceSocketId);
 
     if (
       sourceParticipantDetails == null ||
@@ -128,7 +128,7 @@ io.on("connection", (socket) => {
   socket.on("declineSyncRequest", async (room, sourceSocketId) => {
     const sourceSocket = io.sockets.sockets.get(sourceSocketId);
     const sourceParticipantDetails = JSON.parse(
-      await client.hGet(room, sourceSocketId),
+      await redis.hGet(room, sourceSocketId),
     );
 
     if (sourceSocket && sourceParticipantDetails != null) {
@@ -141,8 +141,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("unsync", async (room, otherSocketId) => {
-    const sourceParticipantDetails = await client.hGet(room, socket.id);
-    const otherParticipantDetails = await client.hGet(room, otherSocketId);
+    const sourceParticipantDetails = await redis.hGet(room, socket.id);
+    const otherParticipantDetails = await redis.hGet(room, otherSocketId);
 
     if (sourceParticipantDetails == null || otherParticipantDetails == null) {
       return;
@@ -201,7 +201,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("joinRoom", async (room, displayName, avatar, id) => {
+    console.log(`${displayName} joining room.`);
     socket.join(room);
+    console.log(`${displayName} joined room.`);
 
     const participantDetails = JSON.stringify({
       uid: id,
@@ -210,12 +212,14 @@ io.on("connection", (socket) => {
       avatar: avatar,
     });
 
-    await client.hSet(room, socket.id, participantDetails);
-    await client.expire(room, roomTTL);
+    await redis.hSet(room, socket.id, participantDetails);
+    await redis.expire(room, roomTTL);
+
+    console.log(`redis updated.`);
 
     timerManager.createTimer(room, id);
 
-    const existingParticipants = await client.hVals(room);
+    const existingParticipants = await redis.hVals(room);
 
     io.to(room).emit("addExistingParticipants", existingParticipants);
 
