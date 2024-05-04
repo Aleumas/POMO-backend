@@ -212,11 +212,10 @@ io.on("connection", (socket) => {
       avatar: avatar,
     });
 
-    result = await redis.hSet(room, socket.id, participantDetails);
+    await redis.hSet(room, socket.id, participantDetails);
     await redis.expire(room, roomTTL);
 
-    console.log(`redis updated.`);
-    console.log(result);
+    console.log(`redis ${room} updated.`);
 
     timerManager.createTimer(room, id);
 
