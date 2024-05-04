@@ -201,9 +201,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("joinRoom", async (room, displayName, avatar, id) => {
-    console.log(`${displayName} joining room.`);
     socket.join(room);
-    console.log(`${displayName} joined room.`);
 
     const participantDetails = JSON.stringify({
       uid: id,
@@ -214,8 +212,6 @@ io.on("connection", (socket) => {
 
     await redis.hSet(room, socket.id, participantDetails);
     await redis.expire(room, roomTTL);
-
-    console.log(`redis ${room} updated.`);
 
     timerManager.createTimer(room, id);
 
