@@ -201,6 +201,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("joinRoom", async (room, displayName, avatar, id) => {
+    console.log("mark 1");
     socket.join(room);
 
     const participantDetails = JSON.stringify({
@@ -210,6 +211,7 @@ io.on("connection", (socket) => {
       avatar: avatar,
     });
 
+    console.log("mark 2");
     await redis.hSet(room, socket.id, participantDetails);
     await redis.expire(room, roomTTL);
 
