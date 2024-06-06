@@ -230,10 +230,6 @@ io.on("connection", (socket) => {
   });
 });
 
-socket.on("connect_error", (err) => {
-  console.log(`connect_error due to ${err.message}`);
-});
-
 app.get("/:user_sub/total_sessions", async (req, res) => {
   const { user_sub } = req.params;
   const { data, error } = await supabase.rpc("get_total_sessions", {
