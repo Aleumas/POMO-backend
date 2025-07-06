@@ -1,23 +1,43 @@
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import TimerManager from "./socket/timer_manager.mjs";
 import cors from "cors";
 import { supabase } from "./supabase/supabase.mjs";
 
 import { createClient } from "redis";
 
 const app = express();
+console.log(
+  process.env.REDIS_PASSWORD,
+  process.env.REDIS_HOST,
+  process.env.REDIS_PORT,
+);
 const redis = createClient({
   password: process.env.REDIS_PASSWORD,
   socket: {
-    host: "redis-18353.c276.us-east-1-2.ec2.redns.redis-cloud.com",
-    port: 18353,
+    host: process.env.REDIS_HOST,
+    port: process.env.REDIS_PORT,
+    connectTimeout: 10000,
+    // Add retry strategy for Redis
+    reconnectStrategy: (retries) => Math.min(retries * 50, 500),
   },
 });
 const httpServer = createServer(app);
 const allowedOrigins = ["https://tomatera.netlify.app"];
 const roomTTL = 60 * 60 * 12; // half a one day
+
+// Add Redis error handling
+redis.on('error', (err) => {
+  console.error('Redis Client Error:', err);
+});
+
+redis.on('connect', () => {
+  console.log('Redis Client Connected');
+});
+
+redis.on('reconnecting', () => {
+  console.log('Redis Client Reconnecting');
+});
 
 await redis.connect();
 
@@ -42,205 +62,269 @@ const io = new Server(httpServer, {
   cors: {
     origin: "*",
   },
+  // Add connection reliability options
+  upgradeTimeout: 30000,
+  allowUpgrades: true,
+  transports: ['websocket', 'polling'],
+  // Enable compression for better performance
+  compression: true,
+  // Set max HTTP buffer size
+  maxHttpBufferSize: 1e6,
 });
 
-const timerManager = new TimerManager();
+// Add connection tracking
+const connectionTracker = new Map();
 
 io.on("connection", (socket) => {
-  socket.on("disconnecting", () => {
+  connectionTracker.set(socket.id, {
+    connectedAt: Date.now(),
+    rooms: new Set(),
+  });
+
+  socket.on('error', (error) => {
+    console.error(`Socket error for ${socket.id}:`, error);
+  });
+
+  socket.on("disconnect", (reason) => {
+    connectionTracker.delete(socket.id);
+  });
+
+  socket.on("disconnecting", async () => {
     var socketRooms = socket.rooms;
-    socketRooms.forEach(async (room) => {
-      const participantDetails = JSON.parse(await redis.hGet(room, socket.id));
+    const tracker = connectionTracker.get(socket.id);
 
-      if (participantDetails) {
-        socket.in(room).emit("removeParticipant", participantDetails.uid);
-        socket
-          .in(room)
-          .emit(
-            "showToast",
-            `${participantDetails.displayName ?? "user"} left room`,
-          );
+    for (const room of socketRooms) {
+      if (room === socket.id) continue; // Skip the socket's own room
 
-        if (timerManager.hasTimer(participantDetails.uid)) {
-          const timer = timerManager.getTimer(participantDetails.uid);
-          timer.stop(io, ["STOP"]);
-          timerManager.deleteTimer(participantDetails.uid);
+      try {
+        const participantDetails = await redis.hGet(room, socket.id);
+
+        if (participantDetails) {
+          const parsedDetails = JSON.parse(participantDetails);
+
+          socket.in(room).emit("removeParticipant", parsedDetails.uid);
+          socket
+            .in(room)
+            .emit(
+              "showToast",
+              `${parsedDetails.displayName ?? "user"} left room`,
+            );
+        }
+
+        await redis.hDel(room, socket.id);
+      } catch (error) {
+        console.error(`Error handling disconnect for room ${room}:`, error);
+      }
+    }
+  });
+
+
+
+
+
+    socket.on("timer:broadcast", async (payload) => {
+    try {
+      if (!payload || !payload.userId || !payload.roomId || !payload.event || !payload.state ||
+          typeof payload.userId !== 'string' || typeof payload.roomId !== 'string' ||
+          typeof payload.event !== 'string' || typeof payload.state !== 'object') {
+        socket.emit('error', 'Invalid timer broadcast parameters');
+        return;
+      }
+
+      const { userId, roomId, event, state, timestamp } = payload;
+
+      if (!state.sessionState || !state.timerState ||
+          typeof state.remainingTime !== 'number' || typeof state.duration !== 'number') {
+        socket.emit('error', 'Invalid timer state in broadcast');
+        return;
+      }
+
+      const validSessionStates = ['work', 'break'];
+      const validTimerStates = ['idle', 'running', 'paused'];
+      const validEvents = ['TICK', 'COMPLETE'];
+
+      if (!validSessionStates.includes(state.sessionState) ||
+          !validTimerStates.includes(state.timerState) ||
+          !validEvents.includes(event)) {
+        socket.emit('error', 'Invalid timer state values in broadcast');
+        return;
+      }
+
+      if (!socket.rooms.has(roomId)) {
+        try {
+          const participantDetails = await redis.hGet(roomId, socket.id);
+          if (!participantDetails) {
+            socket.emit('error', 'Socket not in specified room');
+            return;
+          }
+        } catch (redisError) {
+          socket.emit('error', 'Socket not in specified room');
+          return;
         }
       }
 
-      await redis.hDel(room, socket.id);
-    });
-  });
-
-  socket.on("syncRequest", async (room, targetSocketId) => {
-    const targetSocket = io.sockets.sockets.get(targetSocketId);
-    const sourceParticipantDetails = JSON.parse(
-      await redis.hGet(room, socket.id),
-    );
-
-    if (sourceParticipantDetails && targetSocket) {
-      targetSocket.emit("showSyncRequest", sourceParticipantDetails);
-    }
-  });
-
-  socket.on("acceptSyncRequest", async (room, sourceSocketId) => {
-    const sourceSocket = io.sockets.sockets.get(sourceSocketId);
-
-    const targetParticipantDetails = await redis.hGet(room, socket.id);
-    const sourceParticipantDetails = await redis.hGet(room, sourceSocketId);
-
-    if (
-      sourceParticipantDetails == null ||
-      targetParticipantDetails == null ||
-      !sourceSocket
-    ) {
-      return;
-    }
-
-    const targetParticipantId = JSON.parse(targetParticipantDetails).uid;
-    const sourceParticipantId = JSON.parse(sourceParticipantDetails).uid;
-
-    socket.emit("syncMachines");
-    socket.on("syncMachines", (snapshot) => {
-      const syncedParticipants =
-        timerManager.getTimer(sourceParticipantId)?.owners;
-      if (syncedParticipants) {
-        syncedParticipants.forEach((participant) => {
-          io.to(room).emit(`syncStatusUpdate:${participant}`, false);
-        });
+      try {
+        const participantDetails = await redis.hGet(roomId, socket.id);
+        if (participantDetails) {
+          const parsedDetails = JSON.parse(participantDetails);
+          if (parsedDetails.uid !== userId) {
+            socket.emit('error', 'User ID mismatch for room');
+        return;
+      }
+        }
+      } catch (redisError) {
+        console.warn(`Redis check failed for timer broadcast: ${redisError.message}`);
       }
 
-      io.to(room).emit(`setMachineSnapshot:${targetParticipantId}`, snapshot);
-      io.to(room).emit(`setMachineSnapshot:${sourceParticipantId}`, snapshot);
-      sourceSocket.emit(`syncStatusUpdate:${targetParticipantId}`, true);
-      socket.emit(`syncStatusUpdate:${sourceParticipantId}`, true);
-
-      timerManager.syncTimers(room, targetParticipantId, sourceParticipantId);
-
-      sourceSocket.emit(
-        "showToast",
-        `${targetParticipantDetails.displayName ?? "user"} accepted request to sync.`,
-        "success",
-      );
-    });
-  });
-
-  socket.on("declineSyncRequest", async (room, sourceSocketId) => {
-    const sourceSocket = io.sockets.sockets.get(sourceSocketId);
-    const sourceParticipantDetails = JSON.parse(
-      await redis.hGet(room, sourceSocketId),
-    );
-
-    if (sourceSocket && sourceParticipantDetails != null) {
-      sourceSocket.emit(
-        "showToast",
-        `${sourceParticipantDetails.displayName ?? "user"} declined request to sync.`,
-        "error",
-      );
-    }
-  });
-
-  socket.on("unsync", async (room, otherSocketId) => {
-    const sourceParticipantDetails = await redis.hGet(room, socket.id);
-    const otherParticipantDetails = await redis.hGet(room, otherSocketId);
-
-    if (sourceParticipantDetails == null || otherParticipantDetails == null) {
-      return;
-    }
-
-    const sourceParticipantId = JSON.parse(sourceParticipantDetails).uid;
-    const otherParticipantId = JSON.parse(otherParticipantDetails).uid;
-
-    timerManager.unsyncTimers(room, sourceParticipantId);
-
-    io.to(room).emit(`syncStatusUpdate:${otherParticipantId}`, false);
-    io.to(room).emit(`syncStatusUpdate:${sourceParticipantId}`, false);
-    io.to(room).emit(`machineTransition:${sourceParticipantId}`, "STOP");
-  });
-
-  socket.on(
-    "startTimer",
-    (participantId, preset, transition, nextTransition) => {
-      const timer = timerManager.getTimer(participantId);
-      if (timer) {
-        timer.start(io, preset, transition, nextTransition);
-      }
-    },
-  );
-
-  socket.on("pauseTimer", (participantId) => {
-    const timer = timerManager.getTimer(participantId);
-    if (timer) {
-      timer.pause(io);
-    }
-  });
-
-  socket.on("resumeTimer", (participantId, transition, nextTransitions) => {
-    const timer = timerManager.getTimer(participantId);
-    if (timer) {
-      timer.start(io, timer.time, transition, nextTransitions);
-    }
-  });
-
-  socket.on("stopTimer", (participantId, transitions) => {
-    const timer = timerManager.getTimer(participantId);
-    if (timer) {
-      timer.stop(io, transitions);
-    }
-  });
-
-  socket.on("updateTimer", (time, participantId) => {
-    if (time === 0) {
-      return;
-    }
-
-    const timer = timerManager.getTimer(participantId);
-    if (timer) {
-      timer.update(io, time);
+      const broadcastData = {
+        userId,
+        event,
+        state,
+        timestamp: timestamp || Date.now(),
+      };
+      
+      socket.to(roomId).emit('timerStateUpdate', broadcastData);
+    } catch (error) {
+      console.error(`Error in timer:broadcast for socket ${socket.id}:`, error);
+      socket.emit('error', 'Failed to broadcast timer state');
     }
   });
 
   socket.on("joinRoom", async (room, displayName, avatar, id) => {
-    console.log("mark 1");
-    socket.join(room);
+    try {
+      if (!room || !id || typeof room !== 'string' || typeof id !== 'string' ||
+          room.length > 50 || id.length > 100) {
+        socket.emit('error', 'Invalid join room parameters');
+        return;
+      }
 
-    const participantDetails = JSON.stringify({
-      uid: id,
-      displayName: displayName ?? "user",
-      socketId: socket.id,
-      avatar: avatar,
-    });
+      const sanitizedDisplayName = displayName ?
+        displayName.toString().substring(0, 50).trim() : 'user';
 
-    console.log("mark 2");
-    await redis.hSet(room, socket.id, participantDetails);
-    await redis.expire(room, roomTTL);
+      socket.join(room);
 
-    timerManager.createTimer(room, id);
+      const tracker = connectionTracker.get(socket.id);
+      if (tracker) {
+        tracker.rooms.add(room);
+      }
 
-    const existingParticipants = await redis.hVals(room);
+      const participantDetails = JSON.stringify({
+        uid: id,
+        displayName: sanitizedDisplayName,
+        socketId: socket.id,
+        avatar: avatar || '',
+      });
 
-    io.to(room).emit("addExistingParticipants", existingParticipants);
+      await redis.hSet(room, socket.id, participantDetails);
+      await redis.expire(room, roomTTL);
 
-    socket.in(room).emit("showToast", `${displayName} joined room`);
+      const existingParticipants = await redis.hVals(room);
 
-    await supabase.from("session").insert({
-      id: room,
-      user_id: id,
-    });
+      io.to(room).emit("addExistingParticipants", existingParticipants);
+      socket.in(room).emit("showToast", `${sanitizedDisplayName} joined room`);
+
+      await supabase.from("session").insert({
+        id: room,
+        user_id: id,
+      });
+
+      socket.emit('joinedRoom', { room, participantId: id });
+    } catch (error) {
+      console.error(`Error in joinRoom for socket ${socket.id}:`, error);
+      socket.emit('error', 'Failed to join room');
+    }
   });
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  try {
+    const connectionCount = connectionTracker.size;
+    const redisConnected = redis.isReady;
+
+    const health = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      connections: connectionCount,
+      redis: redisConnected ? 'connected' : 'disconnected',
+      uptime: process.uptime(),
+      memory: process.memoryUsage()
+    };
+
+    res.status(200).json(health);
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(500).json({
+      status: 'unhealthy',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Graceful shutdown handling
+const gracefulShutdown = async (signal) => {
+  console.log(`Received ${signal}. Starting graceful shutdown...`);
+
+  try {
+    // Stop accepting new connections
+    httpServer.close(() => {
+      console.log('HTTP server closed');
+    });
+
+    // Disconnect all socket connections
+    io.close(() => {
+      console.log('Socket.IO server closed');
+    });
+
+    // Close Redis connection
+    await redis.quit();
+    console.log('Redis connection closed');
+
+    console.log('Graceful shutdown completed');
+    process.exit(0);
+  } catch (error) {
+    console.error('Error during graceful shutdown:', error);
+    process.exit(1);
+  }
+};
+
+// Handle shutdown signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  gracefulShutdown('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  gracefulShutdown('unhandledRejection');
 });
 
 app.get("/:user_sub/total_sessions", async (req, res) => {
   const { user_sub } = req.params;
-  const { data, error } = await supabase.rpc("get_total_sessions", {
-    user_sub: user_sub,
-  });
 
-  if (!error) {
-    res.status(200).send(data);
-  } else {
-    res.status(422).send({});
+  try {
+    const { data, error } = await supabase.rpc("get_total_sessions", {
+      user_sub: user_sub,
+    });
+
+    if (!error) {
+      res.status(200).send(data);
+    } else {
+      console.error('Supabase error:', error);
+      res.status(422).json({ error: 'Failed to fetch total sessions' });
+    }
+  } catch (error) {
+    console.error('Error fetching total sessions:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-httpServer.listen(process.env.PORT || 3000);
+const PORT = process.env.PORT || 3000;
+httpServer.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
