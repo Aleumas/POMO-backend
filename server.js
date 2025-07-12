@@ -127,7 +127,7 @@ io.on("connection", (socket) => {
       if (!payload || !payload.userId || !payload.roomId || !payload.event || !payload.state ||
           typeof payload.userId !== 'string' || typeof payload.roomId !== 'string' ||
           typeof payload.event !== 'string' || typeof payload.state !== 'object') {
-        socket.emit('error', 'Invalid timer broadcast parameters');
+        socket.emit('error', `Invalid timer broadcast parameters - ${JSON.stringify(payload)}`);
         return;
       }
 
