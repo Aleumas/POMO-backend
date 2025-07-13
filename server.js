@@ -124,7 +124,6 @@ io.on("connection", (socket) => {
 
     socket.on("timer:broadcast", async (payload) => {
     try {
-      console.log("payload:", payload);
     if (
       !payload ||
       typeof payload !== 'object' ||
