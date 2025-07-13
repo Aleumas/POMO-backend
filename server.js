@@ -160,13 +160,11 @@ io.on("connection", (socket) => {
 
     const validSessionStates = ['work', 'break'];
     const validTimerStates = ['idle', 'running', 'paused'];
-    const validEvents = ['TICK', 'COMPLETE'];
 
     const event = payload.event;
     if (
       !validSessionStates.includes(currentSessionState) ||
-      !validTimerStates.includes(currentTimerState) ||
-      !validEvents.includes(event)
+      !validTimerStates.includes(currentTimerState)
     ) {
       socket.emit('error', 'Invalid timer state values in broadcast');
       return;
@@ -200,7 +198,6 @@ io.on("connection", (socket) => {
 
     const broadcastData = {
       userId,
-      event,
       state: {
         sessionState: currentSessionState,
         timerState: currentTimerState,
