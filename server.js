@@ -124,70 +124,98 @@ io.on("connection", (socket) => {
 
     socket.on("timer:broadcast", async (payload) => {
     try {
-      if (!payload || !payload.userId || !payload.roomId || !payload.event || !payload.state ||
-          typeof payload.userId !== 'string' || typeof payload.roomId !== 'string' ||
-          typeof payload.event !== 'string' || typeof payload.state !== 'object') {
-        socket.emit('error', `Invalid timer broadcast parameters - ${JSON.stringify(payload)}`);
-        return;
-      }
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      !payload.context ||
+      typeof payload.context !== 'object' ||
+      typeof payload.timestamp !== 'number'
+    ) {
+      socket.emit('error', `Invalid timer broadcast payload - ${JSON.stringify(payload)}`);
+      return;
+    }
 
-      const { userId, roomId, event, state, timestamp } = payload;
+    const {
+      userId,
+      roomId,
+      currentSessionState,
+      currentTimerState,
+      remainingTime,
+      duration
+    } = payload.context;
 
-      if (!state.sessionState || !state.timerState ||
-          typeof state.remainingTime !== 'number' || typeof state.duration !== 'number') {
-        socket.emit('error', 'Invalid timer state in broadcast');
-        return;
-      }
+    const { timestamp } = payload;
 
-      const validSessionStates = ['work', 'break'];
-      const validTimerStates = ['idle', 'running', 'paused'];
-      const validEvents = ['TICK', 'COMPLETE'];
+    if (
+      typeof userId !== 'string' ||
+      typeof roomId !== 'string' ||
+      typeof currentSessionState !== 'string' ||
+      typeof currentTimerState !== 'string' ||
+      typeof remainingTime !== 'number' ||
+      typeof duration !== 'number'
+    ) {
+      socket.emit('error', `Invalid timer context - ${JSON.stringify(payload.context)}`);
+      return;
+    }
 
-      if (!validSessionStates.includes(state.sessionState) ||
-          !validTimerStates.includes(state.timerState) ||
-          !validEvents.includes(event)) {
-        socket.emit('error', 'Invalid timer state values in broadcast');
-        return;
-      }
+    const validSessionStates = ['work', 'break'];
+    const validTimerStates = ['idle', 'running', 'paused'];
+    const validEvents = ['TICK', 'COMPLETE'];
 
-      if (!socket.rooms.has(roomId)) {
-        try {
-          const participantDetails = await redis.hGet(roomId, socket.id);
-          if (!participantDetails) {
-            socket.emit('error', 'Socket not in specified room');
-            return;
-          }
-        } catch (redisError) {
+    const event = payload.event;
+    if (
+      !validSessionStates.includes(currentSessionState) ||
+      !validTimerStates.includes(currentTimerState) ||
+      !validEvents.includes(event)
+    ) {
+      socket.emit('error', 'Invalid timer state values in broadcast');
+      return;
+    }
+
+    if (!socket.rooms.has(roomId)) {
+      try {
+        const participantDetails = await redis.hGet(roomId, socket.id);
+        if (!participantDetails) {
           socket.emit('error', 'Socket not in specified room');
           return;
         }
-      }
-
-      try {
-        const participantDetails = await redis.hGet(roomId, socket.id);
-        if (participantDetails) {
-          const parsedDetails = JSON.parse(participantDetails);
-          if (parsedDetails.uid !== userId) {
-            socket.emit('error', 'User ID mismatch for room');
+      } catch (redisError) {
+        socket.emit('error', 'Socket not in specified room');
         return;
       }
-        }
-      } catch (redisError) {
-        console.warn(`Redis check failed for timer broadcast: ${redisError.message}`);
-      }
-
-      const broadcastData = {
-        userId,
-        event,
-        state,
-        timestamp: timestamp || Date.now(),
-      };
-      
-      socket.to(roomId).emit('timerStateUpdate', broadcastData);
-    } catch (error) {
-      console.error(`Error in timer:broadcast for socket ${socket.id}:`, error);
-      socket.emit('error', 'Failed to broadcast timer state');
     }
+
+    try {
+      const participantDetails = await redis.hGet(roomId, socket.id);
+      if (participantDetails) {
+        const parsedDetails = JSON.parse(participantDetails);
+        if (parsedDetails.uid !== userId) {
+          socket.emit('error', 'User ID mismatch for room');
+          return;
+        }
+      }
+    } catch (redisError) {
+      console.warn(`Redis check failed for timer broadcast: ${redisError.message}`);
+    }
+
+    const broadcastData = {
+      userId,
+      event,
+      state: {
+        sessionState: currentSessionState,
+        timerState: currentTimerState,
+        remainingTime,
+        duration,
+      },
+      timestamp: timestamp || Date.now(),
+    };
+
+    socket.to(roomId).emit('timerStateUpdate', broadcastData);
+  } catch (error) {
+    console.error(`Error in timer:broadcast for socket ${socket.id}:`, error);
+    socket.emit('error', 'Failed to broadcast timer state');
+  }
+
   });
 
   socket.on("joinRoom", async (room, displayName, avatar, id) => {
