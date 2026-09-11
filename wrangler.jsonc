@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pomo-realtime",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "observability": { "enabled": true },
+  "vars": {
+    "SUPABASE_URL": "https://jmcnzjtzcxtzzaxejtrj.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_7my_AkJkP-_CkZxTwHeU9w_5GB6HfAk",
+    "ALLOWED_ORIGINS": "https://tomatera.netlify.app,http://localhost:3001"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "RoomServer", "class_name": "RoomServer" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomServer"] }]
+}
