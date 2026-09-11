@@ -123,3 +123,95 @@ describe("RoomServer presence", () => {
     });
   });
 });
+
+describe("RoomServer timers", () => {
+  let stub: SupabaseStub;
+  beforeEach(() => {
+    stub = installSupabaseStub();
+  });
+  afterEach(() => {
+    stub.restore();
+    vi.useRealTimers();
+  });
+
+  it("broadcasts timerUpdated to everyone (including the sender) on start", async () => {
+    const a = await connect("room-t1", "alice");
+    const b = await connect("room-t1", "bob");
+    await waitForType(a.messages, "participantJoined");
+
+    a.send({ type: "start" });
+    await waitForType(a.messages, "timerUpdated");
+    await waitForType(b.messages, "timerUpdated");
+    const update = lastOfType(b.messages, "timerUpdated");
+    expect(update.uid).toBe("alice");
+    expect(update.timer.status).toBe("running");
+    expect(update.timer.endsAt).toBeGreaterThan(update.serverTime);
+  });
+
+  it("answers invalid messages with an error and no broadcast", async () => {
+    const a = await connect("room-t2", "alice");
+    await waitForType(a.messages, "snapshot");
+    a.send({ type: "teleport" });
+    await waitForType(a.messages, "error");
+    expect(a.messages.some((m) => m.type === "timerUpdated")).toBe(false);
+  });
+
+  it("completes a due work timer, flips to break, and queues a focus session", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const a = await connect("room-t3", "alice");
+    const b = await connect("room-t3", "bob");
+    await waitForType(a.messages, "participantJoined");
+
+    a.send({ type: "setPreset", phase: "work", durationMs: 60_000 });
+    await waitForType(a.messages, "timerUpdated");
+    a.send({ type: "start" });
+    await waitForType(a.messages, "timerUpdated", 2);
+
+    const room = env.RoomServer.getByName("room-t3");
+    vi.setSystemTime(Date.now() + 61_000);
+    expect(await runDurableObjectAlarm(room)).toBe(true);
+
+    await waitForType(b.messages, "sessionCompleted");
+    const done = lastOfType(b.messages, "sessionCompleted");
+    expect(done).toMatchObject({ uid: "alice", phase: "work", durationMs: 60_000 });
+    const after = lastOfType(b.messages, "timerUpdated");
+    expect(after.timer).toMatchObject({ phase: "break", status: "idle", remainingMs: 5 * 60_000 });
+
+    await runInDurableObject(room, (_instance, state) => {
+      const rows = state.storage.sql
+        .exec<{ uid: string; room_id: string; duration_seconds: number }>(
+          `SELECT uid, room_id, duration_seconds FROM focus_session_outbox`,
+        )
+        .toArray();
+      expect(rows).toEqual([{ uid: "alice", room_id: "room-t3", duration_seconds: 60 }]);
+    });
+  });
+
+  it("does not queue a focus session for a completed break", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const a = await connect("room-t4", "alice");
+    await waitForType(a.messages, "snapshot");
+    const room = env.RoomServer.getByName("room-t4");
+
+    a.send({ type: "setPreset", phase: "work", durationMs: 60_000 });
+    a.send({ type: "start" });
+    await waitForType(a.messages, "timerUpdated", 2);
+    vi.setSystemTime(Date.now() + 61_000);
+    await runDurableObjectAlarm(room);
+    await waitForType(a.messages, "sessionCompleted");
+
+    a.send({ type: "setPreset", phase: "break", durationMs: 60_000 });
+    a.send({ type: "start" });
+    await waitForType(a.messages, "timerUpdated", 5);
+    vi.setSystemTime(Date.now() + 61_000);
+    await runDurableObjectAlarm(room);
+    await waitForType(a.messages, "sessionCompleted", 2);
+
+    await runInDurableObject(room, (_instance, state) => {
+      const count = state.storage.sql
+        .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM focus_session_outbox`)
+        .one().n;
+      expect(count).toBe(1);
+    });
+  });
+});

@@ -1,6 +1,6 @@
-import { Server, type Connection, type ConnectionContext } from "partyserver";
-import type { RoomParticipant, ServerMessage, Timer } from "./protocol";
-import { DEFAULT_TIMER } from "./timer";
+import { Server, type Connection, type ConnectionContext, type WSMessage } from "partyserver";
+import { parseIntent, type RoomParticipant, type ServerMessage, type Timer } from "./protocol";
+import { DEFAULT_TIMER, applyIntent, completeIfDue } from "./timer";
 
 export const LEAVE_GRACE_MS = 15_000;
 
@@ -97,6 +97,34 @@ export class RoomServer extends Server<Env> {
     await this.scheduleAlarm();
   }
 
+  async onMessage(connection: Connection<ConnState>, message: WSMessage) {
+    const uid = connection.state?.uid;
+    if (!uid) return;
+
+    let raw: unknown = null;
+    try {
+      raw = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message));
+    } catch {
+      raw = null;
+    }
+    const intent = parseIntent(raw);
+    if (!intent) {
+      this.sendTo(connection, { type: "error", serverTime: Date.now(), message: "invalid message" });
+      return;
+    }
+
+    const row = this.getRow(uid);
+    if (!row) return;
+    const timer = JSON.parse(row.timer) as Timer;
+    const now = Date.now();
+    const next = applyIntent(timer, intent, now);
+    if (next === timer) return;
+
+    this.ctx.storage.sql.exec(`UPDATE participants SET timer = ? WHERE uid = ?`, JSON.stringify(next), uid);
+    this.broadcastMessage({ type: "timerUpdated", serverTime: now, uid, timer: next });
+    await this.scheduleAlarm();
+  }
+
   async onClose(connection: Connection<ConnState>) {
     const uid = connection.state?.uid;
     if (!uid) return;
@@ -113,6 +141,31 @@ export class RoomServer extends Server<Env> {
 
   async onAlarm() {
     const now = Date.now();
+
+    for (const row of this.allRows()) {
+      const timer = JSON.parse(row.timer) as Timer;
+      const done = completeIfDue(timer, now);
+      if (!done) continue;
+      this.ctx.storage.sql.exec(`UPDATE participants SET timer = ? WHERE uid = ?`, JSON.stringify(done.timer), row.uid);
+      if (done.completed.phase === "work") {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO focus_session_outbox (uid, room_id, duration_seconds, completed_at) VALUES (?, ?, ?, ?)`,
+          row.uid,
+          this.name,
+          Math.round(done.completed.durationMs / 1000),
+          now,
+        );
+      }
+      this.broadcastMessage({ type: "timerUpdated", serverTime: now, uid: row.uid, timer: done.timer });
+      this.broadcastMessage({
+        type: "sessionCompleted",
+        serverTime: now,
+        uid: row.uid,
+        phase: done.completed.phase,
+        durationMs: done.completed.durationMs,
+      });
+    }
+
     const gone = this.ctx.storage.sql
       .exec<{ uid: string }>(
         `DELETE FROM participants WHERE left_at IS NOT NULL AND left_at <= ? RETURNING uid`,
@@ -122,6 +175,7 @@ export class RoomServer extends Server<Env> {
     for (const { uid } of gone) {
       this.broadcastMessage({ type: "participantLeft", serverTime: now, uid });
     }
+
     await this.scheduleAlarm();
   }
 
