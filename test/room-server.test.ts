@@ -158,6 +158,8 @@ describe("RoomServer timers", () => {
 
   it("completes a due work timer, flips to break, and queues a focus session", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+    // Fail the delivery so the row stays queued; delivery itself is covered separately.
+    stub.failInserts = true;
     const a = await connect("room-t3", "alice");
     const b = await connect("room-t3", "bob");
     await waitForType(a.messages, "participantJoined");
@@ -189,6 +191,8 @@ describe("RoomServer timers", () => {
 
   it("does not queue a focus session for a completed break", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+    // Fail the delivery so the row stays queued; delivery itself is covered separately.
+    stub.failInserts = true;
     const a = await connect("room-t4", "alice");
     await waitForType(a.messages, "snapshot");
     const room = env.RoomServer.getByName("room-t4");
@@ -213,5 +217,21 @@ describe("RoomServer timers", () => {
         .one().n;
       expect(count).toBe(1);
     });
+  });
+
+  it("delivers the queued focus session to Supabase from the alarm", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const a = await connect("room-t5", "alice");
+    await waitForType(a.messages, "snapshot");
+    a.send({ type: "setPreset", phase: "work", durationMs: 60_000 });
+    a.send({ type: "start" });
+    await waitForType(a.messages, "timerUpdated", 2);
+
+    const room = env.RoomServer.getByName("room-t5");
+    vi.setSystemTime(Date.now() + 61_000);
+    await runDurableObjectAlarm(room);
+
+    await vi.waitFor(() => expect(stub.focusSessions).toHaveLength(1));
+    expect(stub.focusSessions[0]).toMatchObject({ user_id: "alice", room_id: "room-t5", duration_seconds: 60 });
   });
 });

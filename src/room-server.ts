@@ -1,4 +1,5 @@
 import { Server, type Connection, type ConnectionContext, type WSMessage } from "partyserver";
+import { OUTBOX_RETRY_MS, flushOutbox } from "./focus-session";
 import { parseIntent, type RoomParticipant, type ServerMessage, type Timer } from "./protocol";
 import { DEFAULT_TIMER, applyIntent, completeIfDue } from "./timer";
 
@@ -176,6 +177,7 @@ export class RoomServer extends Server<Env> {
       this.broadcastMessage({ type: "participantLeft", serverTime: now, uid });
     }
 
+    await flushOutbox(this.ctx.storage.sql, this.env);
     await this.scheduleAlarm();
   }
 
@@ -213,6 +215,10 @@ export class RoomServer extends Server<Env> {
       if (timer.status === "running") consider(timer.endsAt);
       if (row.left_at !== null) consider(row.left_at + LEAVE_GRACE_MS);
     }
+    const pending = this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM focus_session_outbox`)
+      .one().n;
+    if (pending > 0) consider(now + OUTBOX_RETRY_MS);
     return next;
   }
 
