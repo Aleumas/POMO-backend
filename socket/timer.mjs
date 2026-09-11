@@ -1,5 +1,4 @@
 import EventEmitter from "events";
-import { supabase } from "../supabase/supabase.mjs";
 
 class Timer extends EventEmitter {
   constructor(room, owners) {
@@ -24,28 +23,6 @@ class Timer extends EventEmitter {
 
   async handleSessionCompletion(io, userId, sessionType, duration) {
     io.to(this.room).emit(`sessionCompletion:${userId}`);
-    
-    if (sessionType === "work") {
-      await supabase.rpc("increment_total_work_sessions", {
-        uid: this.room,
-        user_sub: userId,
-      });
-      await supabase.rpc("increment_total_work_minutes", {
-        uid: this.room,
-        user_sub: userId,
-        amount: duration / 60,
-      });
-    } else if (sessionType === "break") {
-      await supabase.rpc("increment_total_break_sessions", {
-        uid: this.room,
-        user_sub: userId,
-      });
-      await supabase.rpc("increment_total_break_minutes", {
-        uid: this.room,
-        user_sub: userId,
-        amount: duration / 60,
-      });
-    }
   }
 
   getMachineState(userId) {
