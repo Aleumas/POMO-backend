@@ -105,4 +105,21 @@ describe("RoomServer presence", () => {
     await runDurableObjectAlarm(env.RoomServer.getByName("room-d"));
     expect(a.messages.some((m) => m.type === "participantLeft")).toBe(false);
   });
+
+  it("closes the previous connection when the same uid reconnects while still open", async () => {
+    const a = await connect("room-e", "alice");
+    await waitForType(a.messages, "snapshot");
+
+    let closeCode: number | undefined;
+    a.ws.addEventListener("close", (e) => {
+      closeCode = e.code;
+    });
+
+    const b = await connect("room-e", "alice");
+    await waitForType(b.messages, "snapshot");
+
+    await vi.waitFor(() => {
+      expect(closeCode).toBe(4000);
+    });
+  });
 });
