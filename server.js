@@ -1,9 +1,8 @@
+import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import cors from "cors";
-import { supabase } from "./supabase/supabase.mjs";
-
 import { createClient } from "redis";
 
 const app = express();
@@ -247,12 +246,6 @@ io.on("connection", (socket) => {
 
       io.to(room).emit("addExistingParticipants", existingParticipants);
       socket.in(room).emit("showToast", `${sanitizedDisplayName} joined room`);
-
-      await supabase.from("session").insert({
-        id: room,
-        user_id: id,
-      });
-
       socket.emit('joinedRoom', { room, participantId: id });
     } catch (error) {
       console.error(`Error in joinRoom for socket ${socket.id}:`, error);
@@ -327,26 +320,6 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
   gracefulShutdown('unhandledRejection');
-});
-
-app.get("/:user_sub/total_sessions", async (req, res) => {
-  const { user_sub } = req.params;
-
-  try {
-    const { data, error } = await supabase.rpc("get_total_sessions", {
-      user_sub: user_sub,
-    });
-
-    if (!error) {
-      res.status(200).send(data);
-    } else {
-      console.error('Supabase error:', error);
-      res.status(422).json({ error: 'Failed to fetch total sessions' });
-    }
-  } catch (error) {
-    console.error('Error fetching total sessions:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
 });
 
 const PORT = process.env.PORT || 3000;
