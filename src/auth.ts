@@ -1,22 +1,39 @@
-// Structural (not `Pick<Env, ...>`) because wrangler types generates literal
-// string types for `vars` in wrangler.jsonc, which would reject plain `string`
-// values (e.g. in tests). `Env` still satisfies this interface structurally.
+import { jwtVerify, createRemoteJWKSet, type JWTVerifyGetKey } from "jose";
+
 export interface AuthEnv {
-  SUPABASE_URL: string;
-  SUPABASE_PUBLISHABLE_KEY: string;
+  APP_ORIGIN: string;
 }
 
-export async function verifyAccessToken(
+let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+let cachedOrigin: string | null = null;
+
+function jwksFor(origin: string) {
+  if (!cachedJwks || cachedOrigin !== origin) {
+    cachedJwks = createRemoteJWKSet(new URL(`${origin}/api/auth/jwks`));
+    cachedOrigin = origin;
+  }
+  return cachedJwks;
+}
+
+export async function verifyToken(
   token: string,
-  env: AuthEnv,
+  keySet: JWTVerifyGetKey,
+  opts: { issuer: string; audience: string },
 ): Promise<string | null> {
-  const res = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, {
-    headers: {
-      apikey: env.SUPABASE_PUBLISHABLE_KEY,
-      Authorization: `Bearer ${token}`,
-    },
+  try {
+    const { payload } = await jwtVerify(token, keySet, {
+      issuer: opts.issuer,
+      audience: opts.audience,
+    });
+    return typeof payload.sub === "string" && payload.sub.length > 0 ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function verifyAccessToken(token: string, env: AuthEnv): Promise<string | null> {
+  return verifyToken(token, jwksFor(env.APP_ORIGIN), {
+    issuer: env.APP_ORIGIN,
+    audience: env.APP_ORIGIN,
   });
-  if (!res.ok) return null;
-  const body = (await res.json()) as { id?: unknown };
-  return typeof body.id === "string" && body.id.length > 0 ? body.id : null;
 }
