@@ -12,5 +12,12 @@
   "durable_objects": {
     "bindings": [{ "name": "RoomServer", "class_name": "RoomServer" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomServer"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomServer"] }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pomo",
+      "database_id": "6fe56f08-fd4d-41c7-bc6b-c3981fc8410b"
+    }
+  ]
 }

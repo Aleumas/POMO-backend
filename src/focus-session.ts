@@ -8,37 +8,28 @@ export interface OutboxRow {
   attempts: number;
 }
 
-// Structural interface, not `Pick<Env, ...>`: Wrangler's generated `Env` types `vars` as
-// string literals, so `Pick<Env, ...>` rejects plain `{ SUPABASE_URL: string, ... }` test
-// objects and breaks `npm run typecheck`. This interface is structurally satisfied by `Env`.
-export interface SupabaseEnv {
-  SUPABASE_URL: string;
-  SUPABASE_SECRET_KEY: string;
+export interface FocusDbEnv {
+  DB: D1Database;
 }
 
 export const MAX_ATTEMPTS = 20;
 export const OUTBOX_RETRY_MS = 30_000;
 
-export async function insertFocusSession(row: OutboxRow, env: SupabaseEnv): Promise<boolean> {
+export async function insertFocusSession(row: OutboxRow, env: FocusDbEnv): Promise<boolean> {
   try {
-    const res = await fetch(`${env.SUPABASE_URL}/rest/v1/focus_session`, {
-      method: "POST",
-      headers: {
-        apikey: env.SUPABASE_SECRET_KEY,
-        "Content-Type": "application/json",
-        Prefer: "return=minimal",
-      },
-      body: JSON.stringify({
-        user_id: row.uid,
-        room_id: row.room_id,
-        duration_seconds: row.duration_seconds,
-        completed_at: new Date(row.completed_at).toISOString(),
-      }),
-    });
-    if (!res.ok) {
-      console.error("focus_session insert failed", res.status, await res.text());
-    }
-    return res.ok;
+    await env.DB.prepare(
+      `INSERT INTO focus_session (id, user_id, room_id, duration_seconds, completed_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        row.uid,
+        row.room_id,
+        row.duration_seconds,
+        new Date(row.completed_at).toISOString(),
+      )
+      .run();
+    return true;
   } catch (error) {
     console.error("focus_session insert threw", error);
     return false;
@@ -47,7 +38,7 @@ export async function insertFocusSession(row: OutboxRow, env: SupabaseEnv): Prom
 
 export async function flushOutbox(
   sql: SqlStorage,
-  env: SupabaseEnv,
+  env: FocusDbEnv,
 ): Promise<{ sent: number; remaining: number }> {
   const rows = sql.exec<OutboxRow>(`SELECT * FROM focus_session_outbox ORDER BY id`).toArray();
   let sent = 0;

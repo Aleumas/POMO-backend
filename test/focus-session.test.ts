@@ -1,22 +1,32 @@
 import { env } from "cloudflare:workers";
+import { env as testEnv } from "cloudflare:test";
 import { runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { flushOutbox, insertFocusSession } from "../src/focus-session";
-import { installSupabaseStub, type SupabaseStub } from "./helpers";
 
-const supaEnv = { SUPABASE_URL: "https://supabase.test", SUPABASE_SECRET_KEY: "sk_test" };
 const row = { id: 1, uid: "u1", room_id: "r1", duration_seconds: 1500, completed_at: 1_700_000_000_000, attempts: 0 };
 
-describe("insertFocusSession", () => {
-  let stub: SupabaseStub;
-  beforeEach(() => {
-    stub = installSupabaseStub();
-  });
-  afterEach(() => stub.restore());
+beforeAll(async () => {
+  await testEnv.DB.exec(
+    "CREATE TABLE IF NOT EXISTS focus_session (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, room_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL, completed_at TEXT NOT NULL)",
+  );
+});
 
-  it("posts the row with the secret key on the apikey header", async () => {
-    expect(await insertFocusSession(row, supaEnv)).toBe(true);
-    expect(stub.focusSessions).toEqual([
+async function clearFocusSession() {
+  await testEnv.DB.exec("DELETE FROM focus_session");
+}
+
+describe("insertFocusSession", () => {
+  beforeEach(clearFocusSession);
+
+  it("writes a row to D1", async () => {
+    expect(await insertFocusSession(row, testEnv)).toBe(true);
+    const { results } = await testEnv.DB.prepare(
+      "SELECT user_id, room_id, duration_seconds, completed_at FROM focus_session WHERE user_id = ?",
+    )
+      .bind("u1")
+      .all();
+    expect(results).toEqual([
       {
         user_id: "u1",
         room_id: "r1",
@@ -24,24 +34,22 @@ describe("insertFocusSession", () => {
         completed_at: new Date(1_700_000_000_000).toISOString(),
       },
     ]);
-    const call = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.at(-1)!;
-    const headers = new Headers((call[1] as RequestInit).headers);
-    expect(headers.get("apikey")).toBe("sk_test");
-    expect(headers.get("Authorization")).toBeNull();
   });
 
-  it("returns false when Supabase fails", async () => {
-    stub.failInserts = true;
-    expect(await insertFocusSession(row, supaEnv)).toBe(false);
+  it("returns false when D1 fails", async () => {
+    await testEnv.DB.exec("DROP TABLE focus_session");
+    try {
+      expect(await insertFocusSession(row, testEnv)).toBe(false);
+    } finally {
+      await testEnv.DB.exec(
+        "CREATE TABLE IF NOT EXISTS focus_session (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, room_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL, completed_at TEXT NOT NULL)",
+      );
+    }
   });
 });
 
 describe("flushOutbox", () => {
-  let stub: SupabaseStub;
-  beforeEach(() => {
-    stub = installSupabaseStub();
-  });
-  afterEach(() => stub.restore());
+  beforeEach(clearFocusSession);
 
   const seed = (sql: SqlStorage, attempts = 0) => {
     sql.exec(`CREATE TABLE IF NOT EXISTS focus_session_outbox (
@@ -58,30 +66,48 @@ describe("flushOutbox", () => {
   it("deletes rows after a successful insert", async () => {
     await runInDurableObject(env.RoomServer.getByName("flush-ok"), async (_i, state) => {
       seed(state.storage.sql);
-      const result = await flushOutbox(state.storage.sql, supaEnv);
+      const result = await flushOutbox(state.storage.sql, testEnv);
       expect(result).toEqual({ sent: 1, remaining: 0 });
       expect(count(state.storage.sql)).toBe(0);
     });
-    expect(stub.focusSessions).toHaveLength(1);
+    const { results } = await testEnv.DB.prepare("SELECT user_id FROM focus_session WHERE user_id = ?")
+      .bind("u1")
+      .all();
+    expect(results.length).toBe(1);
   });
 
   it("keeps rows and bumps attempts on failure", async () => {
-    stub.failInserts = true;
-    await runInDurableObject(env.RoomServer.getByName("flush-fail"), async (_i, state) => {
-      seed(state.storage.sql);
-      const result = await flushOutbox(state.storage.sql, supaEnv);
-      expect(result).toEqual({ sent: 0, remaining: 1 });
-      const attempts = state.storage.sql.exec<{ attempts: number }>(`SELECT attempts FROM focus_session_outbox`).one().attempts;
-      expect(attempts).toBe(1);
-    });
+    // Force insertFocusSession to fail by dropping the D1 target table.
+    await testEnv.DB.exec("DROP TABLE focus_session");
+    try {
+      await runInDurableObject(env.RoomServer.getByName("flush-fail"), async (_i, state) => {
+        seed(state.storage.sql);
+        const result = await flushOutbox(state.storage.sql, testEnv);
+        expect(result).toEqual({ sent: 0, remaining: 1 });
+        const attempts = state.storage.sql
+          .exec<{ attempts: number }>(`SELECT attempts FROM focus_session_outbox`)
+          .one().attempts;
+        expect(attempts).toBe(1);
+      });
+    } finally {
+      await testEnv.DB.exec(
+        "CREATE TABLE IF NOT EXISTS focus_session (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, room_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL, completed_at TEXT NOT NULL)",
+      );
+    }
   });
 
   it("drops rows that exhausted their attempts", async () => {
-    stub.failInserts = true;
-    await runInDurableObject(env.RoomServer.getByName("flush-drop"), async (_i, state) => {
-      seed(state.storage.sql, 19);
-      await flushOutbox(state.storage.sql, supaEnv);
-      expect(count(state.storage.sql)).toBe(0);
-    });
+    await testEnv.DB.exec("DROP TABLE focus_session");
+    try {
+      await runInDurableObject(env.RoomServer.getByName("flush-drop"), async (_i, state) => {
+        seed(state.storage.sql, 19);
+        await flushOutbox(state.storage.sql, testEnv);
+        expect(count(state.storage.sql)).toBe(0);
+      });
+    } finally {
+      await testEnv.DB.exec(
+        "CREATE TABLE IF NOT EXISTS focus_session (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, room_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL, completed_at TEXT NOT NULL)",
+      );
+    }
   });
 });
