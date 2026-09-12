@@ -8,6 +8,7 @@
     "APP_ORIGIN": "https://cordonfocus.com",
     "ALLOWED_ORIGINS": "https://cordonfocus.com,http://localhost:3001"
   },
+  "routes": [{ "pattern": "realtime.cordonfocus.com", "custom_domain": true }],
   "durable_objects": {
     "bindings": [{ "name": "RoomServer", "class_name": "RoomServer" }]
   },
