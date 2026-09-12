@@ -1,12 +1,16 @@
 import { env, exports } from "cloudflare:workers";
+import { env as testEnv } from "cloudflare:test";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerMessage } from "../src/protocol";
-import { installSupabaseStub, type SupabaseStub } from "./helpers";
+import { installJwtStub, type JwtStub } from "./helpers";
+
+let jwtStub: JwtStub;
 
 export async function connect(room: string, uid: string, displayName = uid) {
+  const token = await jwtStub.mintToken(uid);
   const res = await exports.default.fetch(
-    `http://example.com/parties/room-server/${room}?_pk=${uid}-${crypto.randomUUID()}&token=tok-${uid}&displayName=${displayName}&avatar=`,
+    `http://example.com/parties/room-server/${room}?_pk=${uid}-${crypto.randomUUID()}&token=${token}&displayName=${displayName}&avatar=`,
     { headers: { Upgrade: "websocket", Origin: "http://localhost:3001" } },
   );
   expect(res.status).toBe(101);
@@ -38,13 +42,18 @@ export const waitForLeftAt = (room: string, uid: string) =>
     });
   });
 
+beforeAll(async () => {
+  await testEnv.DB.exec(
+    "CREATE TABLE IF NOT EXISTS focus_session (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, room_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL, completed_at TEXT NOT NULL)",
+  );
+});
+
 describe("RoomServer presence", () => {
-  let stub: SupabaseStub;
   beforeEach(() => {
-    stub = installSupabaseStub();
+    jwtStub = installJwtStub(env.APP_ORIGIN);
   });
   afterEach(() => {
-    stub.restore();
+    jwtStub.restore();
     vi.useRealTimers();
   });
 
@@ -125,12 +134,12 @@ describe("RoomServer presence", () => {
 });
 
 describe("RoomServer timers", () => {
-  let stub: SupabaseStub;
-  beforeEach(() => {
-    stub = installSupabaseStub();
+  beforeEach(async () => {
+    jwtStub = installJwtStub(env.APP_ORIGIN);
+    await testEnv.DB.exec("DELETE FROM focus_session");
   });
   afterEach(() => {
-    stub.restore();
+    jwtStub.restore();
     vi.useRealTimers();
   });
 
@@ -159,67 +168,79 @@ describe("RoomServer timers", () => {
   it("completes a due work timer, flips to break, and queues a focus session", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     // Fail the delivery so the row stays queued; delivery itself is covered separately.
-    stub.failInserts = true;
-    const a = await connect("room-t3", "alice");
-    const b = await connect("room-t3", "bob");
-    await waitForType(a.messages, "participantJoined");
+    await testEnv.DB.exec("DROP TABLE focus_session");
+    try {
+      const a = await connect("room-t3", "alice");
+      const b = await connect("room-t3", "bob");
+      await waitForType(a.messages, "participantJoined");
 
-    a.send({ type: "setPreset", phase: "work", durationMs: 60_000 });
-    await waitForType(a.messages, "timerUpdated");
-    a.send({ type: "start" });
-    await waitForType(a.messages, "timerUpdated", 2);
+      a.send({ type: "setPreset", phase: "work", durationMs: 60_000 });
+      await waitForType(a.messages, "timerUpdated");
+      a.send({ type: "start" });
+      await waitForType(a.messages, "timerUpdated", 2);
 
-    const room = env.RoomServer.getByName("room-t3");
-    vi.setSystemTime(Date.now() + 61_000);
-    expect(await runDurableObjectAlarm(room)).toBe(true);
+      const room = env.RoomServer.getByName("room-t3");
+      vi.setSystemTime(Date.now() + 61_000);
+      expect(await runDurableObjectAlarm(room)).toBe(true);
 
-    await waitForType(b.messages, "sessionCompleted");
-    const done = lastOfType(b.messages, "sessionCompleted");
-    expect(done).toMatchObject({ uid: "alice", phase: "work", durationMs: 60_000 });
-    const after = lastOfType(b.messages, "timerUpdated");
-    expect(after.timer).toMatchObject({ phase: "break", status: "idle", remainingMs: 5 * 60_000 });
+      await waitForType(b.messages, "sessionCompleted");
+      const done = lastOfType(b.messages, "sessionCompleted");
+      expect(done).toMatchObject({ uid: "alice", phase: "work", durationMs: 60_000 });
+      const after = lastOfType(b.messages, "timerUpdated");
+      expect(after.timer).toMatchObject({ phase: "break", status: "idle", remainingMs: 5 * 60_000 });
 
-    await runInDurableObject(room, (_instance, state) => {
-      const rows = state.storage.sql
-        .exec<{ uid: string; room_id: string; duration_seconds: number }>(
-          `SELECT uid, room_id, duration_seconds FROM focus_session_outbox`,
-        )
-        .toArray();
-      expect(rows).toEqual([{ uid: "alice", room_id: "room-t3", duration_seconds: 60 }]);
-    });
+      await runInDurableObject(room, (_instance, state) => {
+        const rows = state.storage.sql
+          .exec<{ uid: string; room_id: string; duration_seconds: number }>(
+            `SELECT uid, room_id, duration_seconds FROM focus_session_outbox`,
+          )
+          .toArray();
+        expect(rows).toEqual([{ uid: "alice", room_id: "room-t3", duration_seconds: 60 }]);
+      });
+    } finally {
+      await testEnv.DB.exec(
+        "CREATE TABLE IF NOT EXISTS focus_session (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, room_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL, completed_at TEXT NOT NULL)",
+      );
+    }
   });
 
   it("does not queue a focus session for a completed break", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     // Fail the delivery so the row stays queued; delivery itself is covered separately.
-    stub.failInserts = true;
-    const a = await connect("room-t4", "alice");
-    await waitForType(a.messages, "snapshot");
-    const room = env.RoomServer.getByName("room-t4");
+    await testEnv.DB.exec("DROP TABLE focus_session");
+    try {
+      const a = await connect("room-t4", "alice");
+      await waitForType(a.messages, "snapshot");
+      const room = env.RoomServer.getByName("room-t4");
 
-    a.send({ type: "setPreset", phase: "work", durationMs: 60_000 });
-    a.send({ type: "start" });
-    await waitForType(a.messages, "timerUpdated", 2);
-    vi.setSystemTime(Date.now() + 61_000);
-    await runDurableObjectAlarm(room);
-    await waitForType(a.messages, "sessionCompleted");
+      a.send({ type: "setPreset", phase: "work", durationMs: 60_000 });
+      a.send({ type: "start" });
+      await waitForType(a.messages, "timerUpdated", 2);
+      vi.setSystemTime(Date.now() + 61_000);
+      await runDurableObjectAlarm(room);
+      await waitForType(a.messages, "sessionCompleted");
 
-    a.send({ type: "setPreset", phase: "break", durationMs: 60_000 });
-    a.send({ type: "start" });
-    await waitForType(a.messages, "timerUpdated", 5);
-    vi.setSystemTime(Date.now() + 61_000);
-    await runDurableObjectAlarm(room);
-    await waitForType(a.messages, "sessionCompleted", 2);
+      a.send({ type: "setPreset", phase: "break", durationMs: 60_000 });
+      a.send({ type: "start" });
+      await waitForType(a.messages, "timerUpdated", 5);
+      vi.setSystemTime(Date.now() + 61_000);
+      await runDurableObjectAlarm(room);
+      await waitForType(a.messages, "sessionCompleted", 2);
 
-    await runInDurableObject(room, (_instance, state) => {
-      const count = state.storage.sql
-        .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM focus_session_outbox`)
-        .one().n;
-      expect(count).toBe(1);
-    });
+      await runInDurableObject(room, (_instance, state) => {
+        const count = state.storage.sql
+          .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM focus_session_outbox`)
+          .one().n;
+        expect(count).toBe(1);
+      });
+    } finally {
+      await testEnv.DB.exec(
+        "CREATE TABLE IF NOT EXISTS focus_session (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, room_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL, completed_at TEXT NOT NULL)",
+      );
+    }
   });
 
-  it("delivers the queued focus session to Supabase from the alarm", async () => {
+  it("delivers the queued focus session to D1 from the alarm", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const a = await connect("room-t5", "alice");
     await waitForType(a.messages, "snapshot");
@@ -231,7 +252,14 @@ describe("RoomServer timers", () => {
     vi.setSystemTime(Date.now() + 61_000);
     await runDurableObjectAlarm(room);
 
-    await vi.waitFor(() => expect(stub.focusSessions).toHaveLength(1));
-    expect(stub.focusSessions[0]).toMatchObject({ user_id: "alice", room_id: "room-t5", duration_seconds: 60 });
+    await vi.waitFor(async () => {
+      const { results } = await testEnv.DB.prepare(
+        "SELECT user_id, room_id, duration_seconds FROM focus_session WHERE room_id = ?",
+      )
+        .bind("room-t5")
+        .all();
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({ user_id: "alice", room_id: "room-t5", duration_seconds: 60 });
+    });
   });
 });

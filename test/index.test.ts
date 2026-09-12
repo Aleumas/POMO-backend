@@ -1,7 +1,7 @@
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isAllowedOrigin } from "../src/index";
-import { installSupabaseStub, type SupabaseStub } from "./helpers";
+import { installJwtStub, type JwtStub } from "./helpers";
 
 describe("worker routing", () => {
   it("answers /health", async () => {
@@ -29,9 +29,9 @@ describe("isAllowedOrigin", () => {
 });
 
 describe("websocket gate", () => {
-  let stub: SupabaseStub;
+  let stub: JwtStub;
   beforeEach(() => {
-    stub = installSupabaseStub();
+    stub = installJwtStub(env.APP_ORIGIN);
   });
   afterEach(() => stub.restore());
 
@@ -41,7 +41,8 @@ describe("websocket gate", () => {
     });
 
   it("rejects a disallowed origin with 403", async () => {
-    const res = await upgrade("token=tok-u1", "https://evil.example");
+    const token = await stub.mintToken("u1");
+    const res = await upgrade(`token=${token}`, "https://evil.example");
     expect(res.status).toBe(403);
   });
 
@@ -50,8 +51,14 @@ describe("websocket gate", () => {
     expect((await upgrade("token=bad")).status).toBe(401);
   });
 
+  it("rejects a token with the wrong issuer/audience with 401", async () => {
+    const token = await stub.mintToken("u1", { iss: "https://evil.test", aud: "https://evil.test" });
+    expect((await upgrade(`token=${token}`)).status).toBe(401);
+  });
+
   it("upgrades with a valid token", async () => {
-    const res = await upgrade("token=tok-u1&displayName=Maya");
+    const token = await stub.mintToken("u1");
+    const res = await upgrade(`token=${token}&displayName=Maya`);
     expect(res.status).toBe(101);
     expect(res.webSocket).not.toBeNull();
     res.webSocket!.accept();
