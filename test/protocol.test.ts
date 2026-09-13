@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { parseIntent } from "../src/protocol";
 
 describe("parseIntent", () => {
-  it("accepts the four bare intents", () => {
-    for (const type of ["start", "pause", "resume", "stop"] as const) {
+  it("accepts the five bare intents", () => {
+    for (const type of ["start", "pause", "resume", "stop", "skip"] as const) {
       expect(parseIntent({ type })).toEqual({ type });
     }
   });

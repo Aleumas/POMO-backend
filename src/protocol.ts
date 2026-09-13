@@ -23,6 +23,7 @@ export type Intent =
   | { type: "pause" }
   | { type: "resume" }
   | { type: "stop" }
+  | { type: "skip" }
   | { type: "setPreset"; phase: Phase; durationMs: number };
 
 export type ServerMessage =
@@ -47,7 +48,7 @@ export type ServerMessage =
 export const MIN_PRESET_MS = 60_000;
 export const MAX_PRESET_MS = 4 * 60 * 60_000;
 
-const BARE_INTENTS = new Set(["start", "pause", "resume", "stop"]);
+const BARE_INTENTS = new Set(["start", "pause", "resume", "stop", "skip"]);
 const PHASES = new Set<string>(["work", "break"]);
 
 export function parseIntent(raw: unknown): Intent | null {

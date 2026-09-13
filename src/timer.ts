@@ -41,6 +41,21 @@ export function applyIntent(timer: Timer, intent: Intent, now: number): Timer {
         endsAt: null,
       };
 
+    // Skip is break-only: jump straight to work, idle, at its full duration
+    // (same shape a natural break completion leaves behind).
+    case "skip": {
+      if (timer.status === "idle" || timer.phase !== "break") return timer;
+      const nextDuration = phaseDuration(timer, "work");
+      return {
+        ...timer,
+        phase: "work",
+        status: "idle",
+        durationMs: nextDuration,
+        remainingMs: nextDuration,
+        endsAt: null,
+      };
+    }
+
     case "setPreset": {
       if (timer.status !== "idle") return timer;
       const next: Timer =

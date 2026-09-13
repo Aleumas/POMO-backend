@@ -69,6 +69,32 @@ describe("applyIntent", () => {
       ),
     ).toBe(running);
   });
+
+  it("skip jumps break straight to work, idle, at the full work duration", () => {
+    const onBreak = {
+      ...DEFAULT_TIMER,
+      phase: "break" as const,
+      durationMs: 300_000,
+      remainingMs: 300_000,
+    };
+    const running = applyIntent(onBreak, { type: "start" }, T0);
+    const skipped = applyIntent(running, { type: "skip" }, T0 + 60_000);
+    expect(skipped).toMatchObject({
+      phase: "work",
+      status: "idle",
+      durationMs: 25 * 60_000,
+      remainingMs: 25 * 60_000,
+      endsAt: null,
+    });
+  });
+
+  it("skip is a no-op while idle or on a work phase", () => {
+    const onBreak = { ...DEFAULT_TIMER, phase: "break" as const };
+    expect(applyIntent(onBreak, { type: "skip" }, T0)).toBe(onBreak);
+
+    const workRunning = applyIntent(DEFAULT_TIMER, { type: "start" }, T0);
+    expect(applyIntent(workRunning, { type: "skip" }, T0)).toBe(workRunning);
+  });
 });
 
 describe("completeIfDue", () => {
